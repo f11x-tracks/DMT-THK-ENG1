@@ -36,6 +36,11 @@ for file in files:
         # Get file datetime (last modified)
         file_time = datetime.fromtimestamp(os.path.getmtime(file))
         
+        # Extract lot number from filename (between 3rd and 4th dash)
+        filename = os.path.basename(file)
+        filename_parts = filename.split('-')
+        lot_number = filename_parts[3] if len(filename_parts) > 3 else 'Unknown'
+        
         # Determine DMT type from file path
         if 'DMT102' in file:
             dmt = 'DMT102'
@@ -81,6 +86,7 @@ for file in files:
                         'Label': label,
                         'Datum': datum_val,
                         'dmt': dmt,
+                        'LotNumber': lot_number,
                         'WaferID': wafer_id,
                         'XWaferLoc': x_wafer_loc,
                         'YWaferLoc': y_wafer_loc,
@@ -95,6 +101,7 @@ for file in files:
             'filename': os.path.basename(file),
             'full_path': file,
             'dmt_type': dmt,
+            'lot_number': lot_number,
             'file_datetime': file_time.strftime('%Y-%m-%d %H:%M:%S')
         })
         
@@ -183,11 +190,11 @@ def make_scatter_plot():
         return html.Div("No location data available for scatter plot")
     
     # Separate GoF and Thickness data
-    gof_data = df_with_location[df_with_location['Label'] == 'Goodness-of-Fit'][['datetime', 'WaferID', 'dmt', 'location_id', 'Datum']].rename(columns={'Datum': 'GoodnessOfFit'})
-    thickness_data = df_with_location[df_with_location['Label'] == 'Layer 1 Thickness'][['datetime', 'WaferID', 'dmt', 'location_id', 'Datum']].rename(columns={'Datum': 'Layer1Thickness'})
+    gof_data = df_with_location[df_with_location['Label'] == 'Goodness-of-Fit'][['datetime', 'WaferID', 'dmt', 'LotNumber', 'location_id', 'Datum']].rename(columns={'Datum': 'GoodnessOfFit'})
+    thickness_data = df_with_location[df_with_location['Label'] == 'Layer 1 Thickness'][['datetime', 'WaferID', 'dmt', 'LotNumber', 'location_id', 'Datum']].rename(columns={'Datum': 'Layer1Thickness'})
     
     # Merge based on location (same measurement point)
-    merged_data = pd.merge(gof_data, thickness_data, on=['datetime', 'WaferID', 'dmt', 'location_id'], how='inner')
+    merged_data = pd.merge(gof_data, thickness_data, on=['datetime', 'WaferID', 'dmt', 'LotNumber', 'location_id'], how='inner')
     
     if merged_data.empty:
         return html.Div("No paired measurement data available for scatter plot")
@@ -204,7 +211,7 @@ def make_scatter_plot():
             'Layer1Thickness': 'Layer 1 Thickness',
             'dmt': 'DMT Type'
         },
-        hover_data=['WaferID', 'datetime']
+        hover_data=['WaferID', 'LotNumber', 'datetime']
     )
     
     fig.update_layout(
@@ -254,11 +261,12 @@ def make_radius_thickness_plots(y_range=None, show_trend_legend=True):
             name=f'WaferID: {wafer_id}',
             marker=dict(size=8, color=wafer_color),
             text=wafer_data['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S'),
-            customdata=wafer_data['dmt'],
+            customdata=wafer_data[['dmt', 'LotNumber']],
             hovertemplate='<b>%{fullData.name}</b><br>' +
                           'RADIUS: %{x:.2f}<br>' +
                           'Thickness: %{y:.2f}<br>' +
-                          'DMT Type: %{customdata}<br>' +
+                          'DMT Type: %{customdata[0]}<br>' +
+                          'Lot Number: %{customdata[1]}<br>' +
                           'DateTime: %{text}<br>' +
                           '<extra></extra>'
         )
@@ -303,7 +311,7 @@ def make_radius_thickness_plots(y_range=None, show_trend_legend=True):
                 try:
                     coeffs = np.polyfit(wafer_sorted['RADIUS'], wafer_sorted['Datum'], 1)
                     x_fit = np.linspace(wafer_sorted['RADIUS'].min(), wafer_sorted['RADIUS'].max(), 50)
-                    y_fit = np.polyval(coeffs, x_fit)
+                    y_fit = np.polyval(coeffs, x_fit);
                     
                     fig.add_trace(go.Scatter(
                         x=x_fit,
@@ -374,12 +382,13 @@ def make_radius_thickness_by_condition_plots(y_range=None, show_trend_legend=Tru
             name=f'Condition: {condition}',
             marker=dict(size=8, color=condition_color),
             text=condition_data['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S'),
-            customdata=condition_data[['dmt', 'WaferID']],
+            customdata=condition_data[['dmt', 'WaferID', 'LotNumber']],
             hovertemplate='<b>%{fullData.name}</b><br>' +
                           'RADIUS: %{x:.2f}<br>' +
                           'Thickness: %{y:.2f}<br>' +
                           'WaferID: %{customdata[1]}<br>' +
                           'DMT Type: %{customdata[0]}<br>' +
+                          'Lot Number: %{customdata[2]}<br>' +
                           'DateTime: %{text}<br>' +
                           '<extra></extra>'
         )
@@ -477,6 +486,7 @@ def make_files_table():
         columns=[
             {"name": "File Name", "id": "filename"},
             {"name": "DMT Type", "id": "dmt_type"},
+            {"name": "Lot Number", "id": "lot_number"},
             {"name": "File Date/Time", "id": "file_datetime"},
             {"name": "Full Path", "id": "full_path"}
         ],
@@ -953,6 +963,86 @@ def export_summary_tables_to_excel():
         print(f"Error exporting to Excel: {e}")
         return None, False
 
+def export_full_data_to_excel():
+    """Export the full dataframe with all data including RADIUS and Conditions to Excel"""
+    try:
+        # Generate timestamp for filename
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'DMT_Full_Data_{timestamp}.xlsx'
+        
+        if df.empty:
+            print("No data to export")
+            return None, False
+        
+        # Create a copy of the dataframe for export
+        export_df = df.copy()
+        
+        # Format datetime column for better readability
+        export_df['datetime'] = export_df['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Round RADIUS to 2 decimal places for cleaner display
+        export_df['RADIUS'] = export_df['RADIUS'].round(2)
+        
+        # Reorder columns for better presentation
+        column_order = [
+            'datetime', 'LotNumber', 'WaferID', 'Condition', 'dmt', 'Label', 'Datum', 
+            'XWaferLoc', 'YWaferLoc', 'RADIUS', 'location_id'
+        ]
+        
+        # Only include columns that exist in the dataframe
+        available_columns = [col for col in column_order if col in export_df.columns]
+        export_df = export_df[available_columns]
+        
+        # Write to Excel with multiple sheets
+        with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+            # Export all data
+            export_df.to_excel(writer, sheet_name='All Data', index=False)
+            
+            # Export Layer 1 Thickness data only
+            thickness_data = export_df[export_df['Label'] == 'Layer 1 Thickness'].copy()
+            if not thickness_data.empty:
+                thickness_data.to_excel(writer, sheet_name='Layer 1 Thickness', index=False)
+            
+            # Export Goodness-of-Fit data only
+            gof_data = export_df[export_df['Label'] == 'Goodness-of-Fit'].copy()
+            if not gof_data.empty:
+                gof_data.to_excel(writer, sheet_name='Goodness-of-Fit', index=False)
+            
+            # Add metadata sheet
+            metadata = pd.DataFrame({
+                'Export Information': [
+                    'Export Date/Time',
+                    'Total Records',
+                    'Layer 1 Thickness Records',
+                    'Goodness-of-Fit Records',
+                    'Total XML Files Processed',
+                    'Total Wafers',
+                    'Total Lot Numbers',
+                    'Total Conditions',
+                    'Records with RADIUS data',
+                    'Data Description'
+                ],
+                'Value': [
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    len(export_df),
+                    len(export_df[export_df['Label'] == 'Layer 1 Thickness']),
+                    len(export_df[export_df['Label'] == 'Goodness-of-Fit']),
+                    len(processed_files),
+                    len(export_df['WaferID'].unique()) if not export_df.empty else 0,
+                    len(export_df['LotNumber'].unique()) if not export_df.empty else 0,
+                    len(export_df['Condition'].unique()) if not export_df.empty else 0,
+                    len(export_df[export_df['RADIUS'].notna()]),
+                    'Complete measurement data with RADIUS calculations, lot numbers, and process conditions'
+                ]
+            })
+            metadata.to_excel(writer, sheet_name='Export Info', index=False)
+        
+        return filename, True
+        
+    except Exception as e:
+        print(f"Error exporting full data to Excel: {e}")
+        return None, False
+
 # Calculate global Layer 1 Thickness range for scaling
 thickness_data = df[df['Label'] == 'Layer 1 Thickness']['Datum']
 if not thickness_data.empty:
@@ -1029,6 +1119,29 @@ def export_excel(n_clicks):
             ])
     return html.Div()
 
+# Callback for full data Excel export
+@app.callback(
+    Output('export-full-data-status', 'children'),
+    Input('export-full-data-button', 'n_clicks'),
+    prevent_initial_call=True
+)
+def export_full_data_excel(n_clicks):
+    if n_clicks:
+        filename, success = export_full_data_to_excel()
+        if success:
+            return html.Div([
+                html.P(f"✅ Successfully exported full data to: {filename}", 
+                       style={'color': 'green', 'fontWeight': 'bold', 'margin': '10px 0'}),
+                html.P("File saved to current directory", 
+                       style={'color': 'gray', 'fontSize': '12px'})
+            ])
+        else:
+            return html.Div([
+                html.P("❌ Error exporting full data to Excel", 
+                       style={'color': 'red', 'fontWeight': 'bold', 'margin': '10px 0'})
+            ])
+    return html.Div()
+
 app.layout = html.Div([
     html.H1("XML Data Analysis"),
     
@@ -1096,14 +1209,65 @@ app.layout = html.Div([
     
     # Export Section
     html.Div([
-        html.H3("Export Summary Tables"),
-        html.P("Export both statistical summary tables to Excel file with multiple sheets"),
+        html.H3("Export Data to Excel"),
+        
+        # Summary Tables Export
+        html.Div([
+            html.H4("Statistical Summary Tables", style={'margin': '10px 0 5px 0'}),
+            html.P("Export both statistical summary tables to Excel file with multiple sheets", 
+                   style={'margin': '0 0 10px 0', 'fontSize': '14px'}),
+            html.Button(
+                "Export Summary Tables", 
+                id="export-button", 
+                n_clicks=0,
+                style={
+                    'backgroundColor': '#007bff',
+                    'color': 'white',
+                    'border': 'none',
+                    'padding': '10px 20px',
+                    'fontSize': '16px',
+                    'borderRadius': '5px',
+                    'cursor': 'pointer',
+                    'marginBottom': '10px',
+                    'marginRight': '10px'
+                }
+            ),
+            html.Div(id='export-status')
+        ], style={'marginBottom': '20px'}),
+        
+        # Full Data Export
+        html.Div([
+            html.H4("Complete Dataset", style={'margin': '10px 0 5px 0'}),
+            html.P("Export the complete dataframe with all measurements, RADIUS calculations, and process conditions", 
+                   style={'margin': '0 0 10px 0', 'fontSize': '14px'}),
+            html.Button(
+                "Export Full Dataset", 
+                id="export-full-data-button", 
+                n_clicks=0,
+                style={
+                    'backgroundColor': '#28a745',
+                    'color': 'white',
+                    'border': 'none',
+                    'padding': '10px 20px',
+                    'fontSize': '16px',
+                    'borderRadius': '5px',
+                    'cursor': 'pointer',
+                    'marginBottom': '10px'
+                }
+            ),
+            html.Div(id='export-full-data-status')
+        ])
+    ], style={'margin': '20px 0', 'padding': '15px', 'backgroundColor': '#f8f9fa', 'borderRadius': '5px'}),
+    
+    html.Div([
+        html.H3("Export Full Data"),
+        html.P("Export the complete dataset including all measurements and calculated RADIUS"),
         html.Button(
-            "Export to Excel", 
-            id="export-button", 
+            "Export Full Data to Excel", 
+            id="export-full-data-button", 
             n_clicks=0,
             style={
-                'backgroundColor': '#007bff',
+                'backgroundColor': '#28a745',
                 'color': 'white',
                 'border': 'none',
                 'padding': '10px 20px',
@@ -1113,7 +1277,7 @@ app.layout = html.Div([
                 'marginBottom': '10px'
             }
         ),
-        html.Div(id='export-status')
+        html.Div(id='export-full-data-status')
     ], style={'margin': '20px 0', 'padding': '15px', 'backgroundColor': '#f8f9fa', 'borderRadius': '5px'}),
     
     html.Hr(),
